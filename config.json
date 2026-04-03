@@ -1,5 +1,5 @@
 {
-	"slack_token": "xoxb-your-secret-token-here",
+	"slack_token": "xoxb-your-super-secret-token-here",
 	"channel_id": "C08XXXXXXXX",
 	"evans_id": "U08XXXXXXXX",
 	"brenda_id": "U08XXXXXXXX",
