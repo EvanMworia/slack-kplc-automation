@@ -64,13 +64,22 @@ def matches_tomorrow(text):
 def matches_keyword(text):
     keywords = [
         "listed areas will be under planned maintenance",
+        "list of areas",
+        "list of aareas scheduled",
         "listed areas will be under planned maintainance",   # KPLC typo variant
         "following areas are scheduled for planned power maintenance",
+        "following areas",
+        "following areas will be on planned maintenance tomorrow",
+        "following areas will be on planned maintenance",
         "scheduled for planned power maintenance tomorrow",
         "we regret any inconvenience that may occur during operations",
         "we regret any inconvenience that may occur during interruptions",
         "planned power interruption",
+        "planned interruption",
+        "planned power maintenance",
+        "planned power maintenance tomorrow",
         "planned maintenance tomorrow",
+        "planned maintenance ",
     ]
     text_lower = text.lower()
     return any(k.lower() in text_lower for k in keywords)
