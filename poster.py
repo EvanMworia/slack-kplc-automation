@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -88,10 +88,13 @@ def main():
     if not q.get("images"):
         print("  [info] queue is empty — nothing to post today")
         return
-
-    today_str = datetime.now().strftime("%A, %d %B %Y")   # e.g. Friday, 04 April 2026
-    caption   = f"<!channel> ⚡ KPLC power updates — {today_str}"
-
+    #I want the day to be tomorrows date 
+    
+    # today_str = datetime.now().strftime("%A, %d %B %Y")   # e.g. Friday, 04 April 2026
+    # caption   = f"<!channel> ⚡ KPLC power updates — {today_str}"
+    
+    tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%A, %d %B %Y")
+    caption = f"<!channel> ⚡ KPLC power updates — {tomorrow_str}"
     print(f"  [info] posting {len(q['images'])} image(s) to Slack")
     print(f"  [info] caption: {caption}")
 
