@@ -1,1 +1,4 @@
 config.json
+*.log
+*.html
+*.db
