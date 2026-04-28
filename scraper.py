@@ -1,17 +1,26 @@
 import json
 import os
 import requests
-from datetime import datetime, timedelta
-from ntscraper import Nitter
+import feedparser
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 
-# ── paths ────────────────────────────────────────────────────────────────────
+# ── paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 CONFIG     = json.load(open(os.path.join(BASE_DIR, "config.json")))
 QUEUE_FILE = os.path.join(BASE_DIR, "queue.json")
 IMG_DIR    = os.path.join(BASE_DIR, "images")
 os.makedirs(IMG_DIR, exist_ok=True)
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── nitter instances to try in order ─────────────────────────────────────────
+NITTER_INSTANCES = [
+    "https://nitter.net",
+    "https://nitter.poast.org",
+    "https://nitter.privacydev.net",
+    "https://nitter.catsarch.com",
+]
+
+# ── queue helpers ─────────────────────────────────────────────────────────────
 def load_queue():
     if not os.path.exists(QUEUE_FILE):
         return {"tweet_ids": [], "images": []}
@@ -22,88 +31,53 @@ def save_queue(q):
     with open(QUEUE_FILE, "w") as f:
         json.dump(q, f, indent=2)
 
-def ordinal(n):
-    """Return ordinal string for a day number: 1 -> '1st', 4 -> '4th' etc."""
-    s = ["th","st","nd","rd"] + ["th"] * 16
-    return f"{n}{s[n % 20] if n % 20 <= 3 else 'th'}"
-
-def tomorrow_variants():
-    """
-    Build every date format KPLC has been observed to use,
-    for tomorrow's date.  Case-insensitive matching is used later.
-    """
-    t = datetime.now() + timedelta(days=1)
-    d, m, y = t.day, t.month, t.year
-    mn_full  = t.strftime("%B")          # April
-    mn_short = t.strftime("%b")          # Apr
-    dd       = f"{d:02d}"
-    mm       = f"{m:02d}"
-    od       = ordinal(d)                # 4th, 21st …
-
-    return [
-        f"{dd}.{mm}.{y}",               # 04.04.2026
-        f"{d}.{m}.{y}",                 # 4.4.2026
-        f"{dd}/{mm}/{y}",               # 04/04/2026
-        f"{d}/{m}/{y}",                 # 4/4/2026
-        f"{dd}-{mm}-{y}",               # 04-04-2026
-        f"{od} {mn_full} {y}",          # 4th April 2026
-        f"{od} {mn_short} {y}",         # 4th Apr 2026
-        f"{d} {mn_full} {y}",           # 4 April 2026
-        f"{d} {mn_short} {y}",          # 4 Apr 2026
-        f"{mn_full} {d} {y}",           # April 4 2026
-        f"{mn_full} {od} {y}",          # April 4th 2026
-        f"{mn_short} {d} {y}",          # Apr 4 2026
-        f"{mn_short} {od} {y}",         # Apr 4th 2026
-        f"{dd}{mm}{y}",                 # 04042026 (rare but seen)
-    ]
-
-def matches_tomorrow(text):
-    text_lower = text.lower()
-    return any(v.lower() in text_lower for v in tomorrow_variants())
-
+# ── keyword matching (your proven list) ──────────────────────────────────────
 def matches_keyword(text):
     keywords = [
         "listed areas will be under planned maintenance",
-        "list of areas",
-        "list of aareas scheduled",
-        "listed areas will be under planned maintainance",   # KPLC typo variant
+        "listed areas will be under planned maintainance",
         "following areas are scheduled for planned power maintenance",
-        "following areas",
-        "following areas will be on planned maintenance tomorrow",
-        "following areas will be on planned maintenance",
         "scheduled for planned power maintenance tomorrow",
         "we regret any inconvenience that may occur during operations",
         "we regret any inconvenience that may occur during interruptions",
         "planned power interruption",
-        "planned interruption",
-        "planned power maintenance",
-        "planned power maintenance tomorrow",
         "planned maintenance tomorrow",
-        "planned maintenance ",
     ]
-    text_lower = text.lower()
-    return any(k.lower() in text_lower for k in keywords)
+    tl = text.lower()
+    return any(k in tl for k in keywords)
 
-def slack_alert(msg):
-    """Post a plain-text alert to the channel (used for scraper errors)."""
-    from slack_sdk import WebClient
-    client = WebClient(token=CONFIG["slack_token"])
+# ── date check: only tweets published TODAY ───────────────────────────────────
+def published_today(entry):
     try:
-        client.chat_postMessage(channel=CONFIG["channel_id"], text=msg)
+        pub = parsedate_to_datetime(entry.published)
+        return pub.date() == datetime.now().date()
+        # return pub.date() == datetime(2026, 4, 14).date()
+    except Exception:
+        return False
+
+
+# ── slack alert ───────────────────────────────────────────────────────────────
+def slack_alert(msg):
+    from slack_sdk import WebClient
+    try:
+        WebClient(token=CONFIG["slack_token"]).chat_postMessage(
+            channel=CONFIG["channel_id"], text=msg
+        )
     except Exception as e:
-        # Last-resort: write to a local log so it isn't silently swallowed
         with open(os.path.join(BASE_DIR, "error.log"), "a") as log:
             log.write(f"{datetime.now()} | slack_alert failed: {e}\n")
 
+# ── image download ────────────────────────────────────────────────────────────
 def download_image(url, tweet_id, idx):
-    """Download one image and return its local file path, or None on failure."""
+    # Nitter serves images from its own domain — resolve to original if possible
+    # but downloading from Nitter's proxy works fine too
     ext  = url.split("?")[0].split(".")[-1] or "jpg"
     name = f"{tweet_id}_{idx}.{ext}"
     path = os.path.join(IMG_DIR, name)
     if os.path.exists(path):
-        return path                       # already downloaded
+        return path
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         with open(path, "wb") as f:
             f.write(r.content)
@@ -112,62 +86,109 @@ def download_image(url, tweet_id, idx):
         print(f"  [warn] could not download {url}: {e}")
         return None
 
+# ── extract image urls from an RSS entry ─────────────────────────────────────
+def extract_images(entry, base_url):
+    images = []
+
+    # Method 1: media_content (standard RSS media extension)
+    if hasattr(entry, "media_content"):
+        for m in entry.media_content:
+            url = m.get("url", "")
+            if url:
+                images.append(url)
+
+    # Method 2: enclosures
+    if not images and hasattr(entry, "enclosures"):
+        for enc in entry.enclosures:
+            url = enc.get("href", "")
+            if url:
+                images.append(url)
+
+    # Method 3: parse <img> tags from the HTML summary
+    if not images and hasattr(entry, "summary"):
+        import re
+        found = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', entry.summary)
+        for url in found:
+            # Nitter serves images as relative paths sometimes — make absolute
+            if url.startswith("/"):
+                url = base_url + url
+            images.append(url)
+
+    return images
+
+# ── fetch RSS, try each instance until one works ─────────────────────────────
+def fetch_rss():
+    account = CONFIG["x_account"].lstrip("@")
+    last_err = None
+
+    for instance in NITTER_INSTANCES:
+        url = f"{instance}/{account}/rss"
+        try:
+            resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                print(f"  [skip] {instance} returned {resp.status_code}")
+                continue
+            feed = feedparser.parse(resp.content)
+            if not feed.entries:
+                print(f"  [skip] {instance} returned empty feed")
+                continue
+            print(f"  [ok] using {instance} — {len(feed.entries)} entries")
+            return feed, instance
+        except Exception as e:
+            last_err = e
+            print(f"  [skip] {instance} failed: {e}")
+            continue
+
+    raise RuntimeError(f"All Nitter instances failed. Last error: {last_err}")
+
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] scraper started")
     q = load_queue()
 
     try:
-        scraper = Nitter(log_level=1, skip_instance_check=False)
-        tweets  = scraper.get_tweets(CONFIG["x_account"], mode="user", number=40)
+        feed, base_url = fetch_rss()
     except Exception as e:
         msg = (
-            f"⚠️ *KPLC scraper is down* — could not reach X.\n"
+            f"⚠️ *KPLC scraper is down* — all Nitter instances failed.\n"
             f"<@{CONFIG['evans_id']}> <@{CONFIG['brenda_id']}> "
             f"please share updates manually until fixed.\n"
             f"Error: `{e}`"
         )
         slack_alert(msg)
-        print(f"[error] scraper failed: {e}")
-        return
-
-    if not tweets or "tweets" not in tweets:
-        print("  [info] no tweets returned — skipping")
+        print(f"[error] {e}")
         return
 
     new_count = 0
-    for tw in tweets.get("tweets", []):
-        tid  = tw.get("link", "").split("/")[-1] or tw.get("id", "")
-        text = tw.get("text", "")
+    for entry in feed.entries:
 
-        if not tid or tid in q["tweet_ids"]:
+        # derive a stable tweet ID from the URL, e.g. nitter.net/x/status/12345
+        tweet_id = entry.get("id", entry.get("link", "")).rstrip("/").split("/")[-1]
+        text     = entry.get("title", "") + " " + entry.get("summary", "")
+
+        if tweet_id in q["tweet_ids"]:
+            continue
+        if not published_today(entry):
             continue
         if not matches_keyword(text):
             continue
-        if not matches_tomorrow(text):
-            continue
 
-        # Collect all media from this tweet
-        media_items = tw.get("pictures", []) or tw.get("media", []) or []
-        if not media_items:
-            print(f"  [warn] matched tweet {tid} has no images — skipping")
+        images = extract_images(entry, base_url)
+        if not images:
+            print(f"  [warn] matched tweet {tweet_id} has no images — skipping")
             continue
 
         paths = []
-        for idx, item in enumerate(media_items):
-            # ntscraper returns either a string URL or a dict with a 'url' key
-            url = item if isinstance(item, str) else item.get("url", "")
-            if not url:
-                continue
-            p = download_image(url, tid, idx)
+        for idx, url in enumerate(images):
+            p = download_image(url, tweet_id, idx)
             if p:
                 paths.append(p)
 
         if paths:
-            q["tweet_ids"].append(tid)
+            q["tweet_ids"].append(tweet_id)
             q["images"].extend(paths)
             new_count += 1
-            print(f"  [queued] tweet {tid} — {len(paths)} image(s)")
+            print(f"  [queued] tweet {tweet_id} — {len(paths)} image(s)")
 
     save_queue(q)
     print(f"[done] {new_count} new tweet(s) queued | total images: {len(q['images'])}")

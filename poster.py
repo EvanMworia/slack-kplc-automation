@@ -88,13 +88,10 @@ def main():
     if not q.get("images"):
         print("  [info] queue is empty — nothing to post today")
         return
-    #I want the day to be tomorrows date 
+
     
-    # today_str = datetime.now().strftime("%A, %d %B %Y")   # e.g. Friday, 04 April 2026
-    # caption   = f"<!channel> ⚡ KPLC power updates — {today_str}"
-    
-    tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%A, %d %B %Y")
-    caption = f"<!channel> ⚡ KPLC power updates — {tomorrow_str}"
+    today_str = datetime.now().strftime("%A, %d %B %Y")   # e.g. Friday, 04 April 2026
+    caption   = f"<!channel> ⚡ KPLC power updates — {today_str}"
     print(f"  [info] posting {len(q['images'])} image(s) to Slack")
     print(f"  [info] caption: {caption}")
 
@@ -106,7 +103,8 @@ def main():
     except Exception as e:
         msg = (
             f"⚠️ *KPLC poster failed* — images could not be sent to Slack.\n"
-            f"<@{CONFIG['evans_id']}> <@{CONFIG['brenda_id']}> "
+            # f"<@{CONFIG['evans_id']}> <@{CONFIG['brenda_id']}> "
+            f"<@{CONFIG['brenda_id']}> "
             f"please share updates manually today.\n"
             f"Error: `{e}`"
         )
